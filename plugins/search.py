@@ -12,7 +12,7 @@ except ImportError:
 # Configuration
 EXACT_MATCH_THRESHOLD = 60   # 60% ya usse zyada accurate match hone par direct story
 SUGGESTION_THRESHOLD = 40    # 40% se 59% accurate match hone par "Did You Mean"
-                             # 40% se kam match -> STRICT SILENT MODE (No False Buttons)
+                             # 40% se kam match -> STRICT SILENT MODE
 AUTO_DELETE_TIME = 300       # Auto-delete time in seconds (5 Minutes)
 
 
@@ -22,7 +22,15 @@ def clean_text(text: str) -> str:
     return text.strip().lower()
 
 
-@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "about", "add", "delete", "premium", "make_premium", "remove_premium", "addstory", "delstory", "rmstory", "addpremium", "removepremium"]))
+# Extended command list in filter to avoid stealing any bot commands
+IGNORE_COMMANDS = [
+    "start", "help", "about", "add", "delete", "premium", "make_premium", 
+    "remove_premium", "addpremium", "removepremium", "delpremium", "rmpremium",
+    "addstory", "delstory", "rmstory", "removestory", "deletestory", "addpost",
+    "filter"
+]
+
+@Client.on_message(filters.private & filters.text & ~filters.command(IGNORE_COMMANDS))
 async def strict_fuzzy_search_handler(bot: Client, message: Message):
     text = message.text.strip()
 
@@ -47,14 +55,14 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
         if not raw_title or not link:
             continue
 
-        # RULE: Save/Fetch FIRST LINE only as title
+        # RULE: Fetch FIRST LINE only as title
         first_line_title = raw_title.split("\n")[0].strip()
         clean_title = clean_text(first_line_title)
 
         if not clean_title:
             continue
 
-        # Skip irrelevant test entries if user didn't explicitly search for them
+        # Skip test entries if user didn't explicitly search for them
         if "test" in clean_title and "test" not in clean_query:
             continue
 
@@ -64,7 +72,6 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
         # Bonus score check if search words are present inside the title
         word_overlap = sum(1 for word in query_words if word in clean_title)
         if word_overlap == 0 and fuzzy_score < 65:
-            # Drop matches that don't share actual words
             continue
 
         item = {
@@ -99,7 +106,6 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
             disable_web_page_preview=True
         )
         
-        # Auto-delete after 5 minutes
         asyncio.create_task(auto_delete_message(sent_msg, AUTO_DELETE_TIME))
         return
 
@@ -110,10 +116,11 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
             f"<i>ᴄʟɪᴄᴋ ᴏɴ ᴀ ʙᴜᴛᴛᴏɴ ʙᴇʟᴏᴡ ᴛᴏ ɢᴇᴛ ʏᴏᴜʀ sᴛᴏʀʏ:</i>"
         )
         buttons = []
+        # Store index in callback data for accurate mapping
         for idx, item in enumerate(suggestion_matches[:5]):
             title = item["title"]
             label = f"❓ {title[:35]}..." if len(title) > 35 else f"❓ {title}"
-            buttons.append([InlineKeyboardButton(label, callback_data=f"sgst_{idx}")])
+            buttons.append([InlineKeyboardButton(label, callback_data=f"sgst_{idx}_{clean_query[:10]}")])
 
         sent_msg = await message.reply_text(
             text=reply_text + delete_notice,
@@ -121,11 +128,10 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
             disable_web_page_preview=True
         )
 
-        # Auto-delete after 5 minutes
         asyncio.create_task(auto_delete_message(sent_msg, AUTO_DELETE_TIME))
         return
 
-    # --- C. STRICT SILENT MODE (Out of DB -> No output) ---
+    # --- C. STRICT SILENT MODE ---
     else:
         return
 
@@ -136,11 +142,13 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
 async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
     await query.answer()
 
+    # Extract button text safely
     clicked_title = ""
     if query.message and query.message.reply_markup:
         for row in query.message.reply_markup.inline_keyboard:
             for btn in row:
                 if btn.callback_data == query.data:
+                    # Clean prefix/suffix from button display text
                     clicked_title = btn.text.replace("❓ ", "").replace("...", "").strip()
                     break
 
@@ -149,10 +157,14 @@ async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
     matched_full_title = ""
 
     if clicked_title and all_posts:
+        clean_clicked = clean_text(clicked_title)
         for post in all_posts:
             raw_title = post.get("title", "")
             first_line = raw_title.split("\n")[0].strip()
-            if clicked_title.lower() in first_line.lower():
+            clean_first_line = clean_text(first_line)
+
+            # Match partial or full title safely
+            if clean_clicked in clean_first_line or clean_first_line in clean_clicked:
                 matched_link = post.get("link", "")
                 matched_full_title = first_line
                 break
