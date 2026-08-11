@@ -1,91 +1,103 @@
 import re
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from fuzzywuzzy import fuzz
 from database import db
 
-EXACT_MATCH_THRESHOLD = 50  # 50% ya usse zyada match hone par direct link
-SUGGESTION_THRESHOLD = 25   # 25% se 49% match hone par "Did You Mean"
-                            # 25% se kam hone par Silent Mode
+# Configuration
+EXACT_MATCH_THRESHOLD = 60   # 60% ya usse zyada accurate match hone par direct story
+SUGGESTION_THRESHOLD = 40    # 40% se 59% accurate match hone par "Did You Mean"
+                             # 40% se kam match -> STRICT SILENT MODE (No False Buttons)
+AUTO_DELETE_TIME = 300       # Auto-delete time in seconds (5 Minutes)
 
 
 def clean_text(text: str) -> str:
-    """Removes special characters for clean search."""
+    """Removes symbols and converts text to lowercase."""
     text = re.sub(r'[^\w\s]', '', text)
     return text.strip().lower()
 
 
-@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "about"]))
-async def search_handler(bot: Client, message: Message):
-    query = message.text.strip()
-    
-    if len(query) < 2:
+@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "about", "add", "delete", "premium", "make_premium", "remove_premium"]))
+async def strict_fuzzy_search_handler(bot: Client, message: Message):
+    text = message.text.strip()
+
+    # 1. Ignore Commands, URLs, and Extremely Short Queries
+    if text.startswith("/") or text.startswith("http://") or text.startswith("https://") or len(text) < 2:
         return
 
-    # Fetch posts from MongoDB
     all_posts = await db.get_all_posts()
-    
-    # Debug print (Server Terminal par check karne ke liye)
-    print(f"DEBUG: Search Query -> '{query}' | Total Posts in DB -> {len(all_posts)}")
-
     if not all_posts:
-        # DB Khali hai -> Silent Mode
         return
 
-    clean_query = clean_text(query)
+    clean_query = clean_text(text)
+    query_words = clean_query.split()
+
     exact_matches = []
     suggestion_matches = []
 
     for post in all_posts:
         raw_title = post.get("title", "")
         link = post.get("link", "")
-        
+
         if not raw_title or not link:
             continue
 
-        # RULE: Sirf Pehli Line (First Line Title Only)
+        # RULE: Fetch FIRST LINE only
         first_line_title = raw_title.split("\n")[0].strip()
         clean_title = clean_text(first_line_title)
 
-        # 1. Direct Word Presence Check (Agar query title me moojood hai)
-        if clean_query in clean_title or clean_title in clean_query:
-            score = 95
-        else:
-            # 2. Fuzzy Matching Score using FuzzyWuzzy
-            score = fuzz.partial_ratio(clean_query, clean_title)
+        # Skip irrelevant or single word test entries if user didn't explicitly search for them
+        if "test" in clean_title and "test" not in clean_query:
+            continue
+
+        # 2. STRICT WORD ACCURACY CHECK
+        # token_set_ratio compares word sets instead of random substring matches
+        fuzzy_score = fuzz.token_set_ratio(clean_query, clean_title)
+
+        # Bonus score if search words are strictly present inside the title
+        word_overlap = sum(1 for word in query_words if word in clean_title)
+        if word_overlap == 0 and fuzzy_score < 65:
+            # Drop matches that don't share actual words
+            continue
 
         item = {
             "title": first_line_title,
             "link": link,
-            "score": score
+            "score": fuzzy_score
         }
 
-        if score >= EXACT_MATCH_THRESHOLD:
+        if fuzzy_score >= EXACT_MATCH_THRESHOLD:
             exact_matches.append(item)
-        elif score >= SUGGESTION_THRESHOLD:
+        elif fuzzy_score >= SUGGESTION_THRESHOLD:
             suggestion_matches.append(item)
 
-    # Sort results by match score (highest first)
+    # Sort results by score (Highest first)
     exact_matches.sort(key=lambda x: x["score"], reverse=True)
     suggestion_matches.sort(key=lambda x: x["score"], reverse=True)
 
-    # --- 1. DIRECT MATCH FOUND (Score >= 50) ---
+    delete_notice = "\n\n<i>⏳ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇᴅ ɪɴ 𝟻 ᴍɪɴᴜᴛᴇs.</i>"
+
+    # --- A. DIRECT EXACT MATCH (Score >= 60) ---
     if exact_matches:
-        reply_text = f"<b>🔍 sᴇᴀʀᴄʜ ʀᴇsᴜʟᴛs ғᴏʀ:</b> <code>{query}</code>\n\n"
+        reply_text = f"<b>🔍 sᴇᴀʀᴄʜ ʀᴇsᴜʟᴛs ғᴏʀ:</b> <code>{text}</code>\n\n"
         buttons = []
         for item in exact_matches[:5]:
             title = item["title"]
             label = f"✨ {title[:35]}..." if len(title) > 35 else f"✨ {title}"
             buttons.append([InlineKeyboardButton(label, url=item["link"])])
 
-        await message.reply_text(
-            text=reply_text,
+        sent_msg = await message.reply_text(
+            text=reply_text + delete_notice,
             reply_markup=InlineKeyboardMarkup(buttons),
             disable_web_page_preview=True
         )
+        
+        # Auto-delete after 5 minutes
+        asyncio.create_task(auto_delete_message(sent_msg, AUTO_DELETE_TIME))
         return
 
-    # --- 2. DID YOU MEAN SUGGESTIONS (25 <= Score < 50) ---
+    # --- B. ACCURATE DID YOU MEAN SUGGESTIONS (Score 40-59) ---
     elif suggestion_matches:
         reply_text = (
             f"<b>🤔 ᴅɪᴅ ʏᴏᴜ ᴍᴇᴀɴ ᴏɴᴇ ᴏғ ᴛʜᴇsᴇ?</b>\n\n"
@@ -97,25 +109,27 @@ async def search_handler(bot: Client, message: Message):
             label = f"❓ {title[:35]}..." if len(title) > 35 else f"❓ {title}"
             buttons.append([InlineKeyboardButton(label, callback_data=f"sgst_{idx}")])
 
-        await message.reply_text(
-            text=reply_text,
+        sent_msg = await message.reply_text(
+            text=reply_text + delete_notice,
             reply_markup=InlineKeyboardMarkup(buttons),
             disable_web_page_preview=True
         )
+
+        # Auto-delete after 5 minutes
+        asyncio.create_task(auto_delete_message(sent_msg, AUTO_DELETE_TIME))
         return
 
-    # --- 3. SILENT MODE (Score < 25) ---
+    # --- C. STRICT SILENT MODE ---
     else:
         return
 
 
-# --- CALLBACK HANDLER FOR "DID YOU MEAN" BUTTON CLICKS ---
+# --- CALLBACK HANDLER FOR "DID YOU MEAN" BUTTONS ---
 
 @Client.on_callback_query(filters.regex(r"^sgst_"))
 async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
     await query.answer()
 
-    # Get clicked button label text
     clicked_title = ""
     if query.message and query.message.reply_markup:
         for row in query.message.reply_markup.inline_keyboard:
@@ -145,7 +159,9 @@ async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
     except Exception:
         pass
 
-    # 2. Send the final Story Link
+    delete_notice = "\n\n<i>⏳ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇᴅ ɪɴ 𝟻 ᴍɪɴᴜᴛᴇs.</i>"
+
+    # 2. Send final story link message
     if matched_link:
         reply_text = (
             f"<b>✨ ʜᴇʀᴇ ɪs ʏᴏᴜʀ sᴛᴏʀʏ:</b>\n\n"
@@ -154,14 +170,24 @@ async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 ᴄʟɪᴄᴋ ʜᴇʀᴇ ᴛᴏ ᴏᴘᴇɴ", url=matched_link)]
         ])
-        await bot.send_message(
+        sent_msg = await bot.send_message(
             chat_id=chat_id,
-            text=reply_text,
+            text=reply_text + delete_notice,
             reply_markup=buttons,
             disable_web_page_preview=True
         )
+        asyncio.create_task(auto_delete_message(sent_msg, AUTO_DELETE_TIME))
     else:
         await bot.send_message(
             chat_id=chat_id,
             text="<b>❌ Story link not found or expired.</b>"
         )
+
+
+async def auto_delete_message(message: Message, delay: int):
+    """Deletes a message after a specified delay in seconds."""
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except Exception:
+        pass
