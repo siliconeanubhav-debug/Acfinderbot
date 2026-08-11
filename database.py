@@ -79,9 +79,28 @@ class Database:
             return []
 
     async def delete_post(self, title: str) -> bool:
-        """Deletes a post/story from the database by title."""
+        """Deletes a post/story from the database by title (Case-Insensitive)."""
         first_line = title.split("\n")[0].strip()
+        
+        # Exact match first
         result = await self.posts.delete_one({"title": first_line})
+        if result.deleted_count > 0:
+            return True
+            
+        # Fallback: Case-insensitive regex match
+        regex_pattern = re.compile(f"^{re.escape(first_line)}$", re.IGNORECASE)
+        regex_result = await self.posts.delete_one({"title": {"$regex": regex_pattern}})
+        if regex_result.deleted_count > 0:
+            return True
+
+        # Partial Regex Match as last resort
+        partial_pattern = re.compile(re.escape(first_line), re.IGNORECASE)
+        partial_result = await self.posts.delete_one({"title": {"$regex": partial_pattern}})
+        return partial_result.deleted_count > 0
+
+    async def delete_post_by_link(self, link: str) -> bool:
+        """Deletes a post/story by link directly."""
+        result = await self.posts.delete_one({"link": link.strip()})
         return result.deleted_count > 0
 
 db = Database()
