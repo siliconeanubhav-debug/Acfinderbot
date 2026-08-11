@@ -35,4 +35,20 @@ class Database:
         regex_pattern = re.compile(re.escape(query), re.IGNORECASE)
         return await self.posts.find({"title": {"$regex": regex_pattern}}).to_list(length=limit)
 
+    # --- missing functions required for fuzzy search & management ---
+
+    async def get_all_posts(self):
+        """Fetches all stories/posts for fuzzy search matching."""
+        try:
+            return await self.posts.find().to_list(length=None)
+        except Exception as e:
+            print(f"Database Fetch Error: {e}")
+            return []
+
+    async def delete_post(self, title: str) -> bool:
+        """Deletes a post/story from the database by title."""
+        first_line = title.split("\n")[0].strip()
+        result = await self.posts.delete_one({"title": first_line})
+        return result.deleted_count > 0
+
 db = Database()
