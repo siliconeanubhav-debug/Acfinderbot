@@ -1,9 +1,13 @@
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
 from config import Config
+
+# India Standard Timezone Constant
+IST = ZoneInfo("Asia/Kolkata")
 
 
 # --- 1. TIME & GREETING HELPERS ---
@@ -62,8 +66,8 @@ def format_time(seconds: int) -> str:
 
 
 def get_time_greeting() -> str:
-    """Returns dynamic time-based greetings (Good Morning, Good Afternoon, etc.)."""
-    current_hour = datetime.now().hour
+    """Returns dynamic time-based greetings strictly in Asia/Kolkata timezone."""
+    current_hour = datetime.now(IST).hour
     if 5 <= current_hour < 12:
         return "Good Morning ☀️"
     elif 12 <= current_hour < 17:
@@ -86,20 +90,22 @@ def extract_first_line(text: str) -> str:
 
 async def check_force_sub(bot: Client, user_id: int) -> bool:
     """Checks whether the user has joined the force subscription channel."""
-    if not getattr(Config, "FSUB_CHANNEL", None):
+    fsub_channel = getattr(Config, "FSUB_CHANNEL", None)
+    if not fsub_channel:
         return True
     try:
-        member = await bot.get_chat_member(Config.FSUB_CHANNEL, user_id)
+        member = await bot.get_chat_member(fsub_channel, user_id)
         return member.status not in ["kicked", "left"]
     except UserNotParticipant:
         return False
-    except Exception:
+    except Exception as e:
+        # Unexpected error (bot not admin or channel private), allow user to avoid bot crash
         return True
 
 
 def is_admin(user_id: int) -> bool:
     """Checks if the user ID exists in the admin list."""
-    return user_id in getattr(Config, "ADMINS", [])
+    return int(user_id) in getattr(Config, "ADMINS", [])
 
 
 # --- 3. UI BUTTON HELPERS ---
