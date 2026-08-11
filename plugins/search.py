@@ -1,16 +1,17 @@
 import re
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from rapidfuzz import process, fuzz
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from fuzzywuzzy import fuzz, process
 from database import db
 
-# Threshold score for fuzzy matching (0 - 100)
-# 60 means if match score is less than 60%, bot remains SILENT
-FUZZY_THRESHOLD = 60
+# Threshold Scores
+EXACT_MATCH_THRESHOLD = 60  # Direct result if score >= 60
+SUGGESTION_THRESHOLD = 30   # Show "Did You Mean" if score is between 30 and 59
+                            # Below 30 = SILENT MODE
 
 
 def clean_text(text: str) -> str:
-    """Removes special characters and extra spaces for cleaner search matching."""
+    """Cleans text for better fuzzy matching."""
     text = re.sub(r'[^\w\s]', '', text)
     return text.strip().lower()
 
@@ -19,32 +20,36 @@ def clean_text(text: str) -> str:
 async def fuzzy_search_handler(bot: Client, message: Message):
     query = message.text.strip()
     
-    # Ignore very short messages to prevent unnecessary processing
     if len(query) < 2:
         return
 
-    # Fetch all posts/stories from Mongo DB
-    all_posts = await db.get_all_posts() # Ensure get_all_posts() returns a list of dicts with 'title' and 'link'
+    # Fetch all stored stories from Mongo DB
+    all_posts = await db.get_all_posts()
     
     if not all_posts:
-        # Out of DB / Empty Database -> Silent Mode
+        # DB Empty -> Silent Mode
         return
 
-    # Extract clean titles (first lines) for fuzzy matching
+    # Map only the FIRST LINE of each post title
     titles_map = {}
     for post in all_posts:
         raw_title = post.get("title", "")
-        # Take only the first line of the title if multiple lines exist
+        if not raw_title:
+            continue
+            
         first_line_title = raw_title.split("\n")[0].strip()
+        link = post.get("link", "")
+        
         if first_line_title:
-            titles_map[first_line_title] = post.get("link", "")
+            titles_map[first_line_title] = link
 
     titles_list = list(titles_map.keys())
     if not titles_list:
         return
 
-    # Perform Fuzzy Match using rapidfuzz
     cleaned_query = clean_text(query)
+    
+    # Get top 5 fuzzy matches using fuzzywuzzy
     best_matches = process.extract(
         cleaned_query,
         titles_list,
@@ -52,30 +57,101 @@ async def fuzzy_search_handler(bot: Client, message: Message):
         limit=5
     )
 
-    # Filter matches that meet the similarity threshold
-    matched_results = []
-    for match_title, score, index in best_matches:
-        if score >= FUZZY_THRESHOLD:
-            link = titles_map[match_title]
-            matched_results.append((match_title, link, score))
+    exact_matches = []
+    suggestion_matches = []
 
-    # SILENT MODE: If no result matches the minimum threshold, remain completely silent
-    if not matched_results:
+    for match_title, score in best_matches:
+        if score >= EXACT_MATCH_THRESHOLD:
+            exact_matches.append((match_title, titles_map[match_title]))
+        elif score >= SUGGESTION_THRESHOLD:
+            suggestion_matches.append((match_title, titles_map[match_title]))
+
+    # 1. DIRECT MATCH FOUND (Score >= 60)
+    if exact_matches:
+        reply_text = f"<b>🔍 sᴇᴀʀᴄʜ ʀᴇsᴜʟᴛs ғᴏʀ:</b> <code>{query}</code>\n\n"
+        buttons = []
+        for title, link in exact_matches:
+            button_label = f"✨ {title[:35]}..." if len(title) > 35 else f"✨ {title}"
+            buttons.append([InlineKeyboardButton(button_label, url=link)])
+
+        await message.reply_text(
+            text=reply_text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True
+        )
         return
 
-    # Construct UI Response
-    reply_text = f"<b>🔍 sᴇᴀʀᴄʜ ʀᴇsᴜʟᴛs ғᴏʀ:</b> <code>{query}</code>\n\n"
-    buttons = []
+    # 2. DID YOU MEAN SUGGESTIONS (30 <= Score < 60)
+    elif suggestion_matches:
+        reply_text = (
+            f"<b>🤔 ᴅɪᴅ ʏᴏᴜ ᴍᴇᴀɴ ᴏɴᴇ ᴏғ ᴛʜᴇsᴇ?</b>\n\n"
+            f"<i>ᴄʟɪᴄᴋ ᴏɴ ᴀ ʙᴜᴛᴛᴏɴ ʙᴇʟᴏᴡ ᴛᴏ ɢᴇᴛ Yᴏᴜʀ sᴛᴏʀʏ:</i>"
+        )
+        buttons = []
+        # Store index or title reference in callback data
+        for idx, (title, link) in enumerate(suggestion_matches):
+            button_label = f"❓ {title[:35]}..." if len(title) > 35 else f"❓ {title}"
+            # Pass custom callback prefix for suggestions
+            buttons.append([InlineKeyboardButton(button_label, callback_data=f"sgst_{idx}_{query[:10]}")])
 
-    for title, link, score in matched_results:
-        # Truncate long titles for neat inline button view
-        button_label = f"✨ {title[:35]}..." if len(title) > 35 else f"✨ {title}"
-        buttons.append([InlineKeyboardButton(button_label, url=link)])
+        # Temporarily store matches context or handle dynamic link fetching
+        await message.reply_text(
+            text=reply_text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True
+        )
+        return
 
-    keyboard = InlineKeyboardMarkup(buttons)
+    # 3. SILENT MODE (Score < 30)
+    else:
+        return
 
-    await message.reply_text(
-        text=reply_text,
-        reply_markup=keyboard,
-        disable_web_page_preview=True
-    )
+
+# --- HANDLER FOR "DID YOU MEAN" BUTTON CLICKS ---
+
+@Client.on_callback_query(filters.regex(r"^sgst_"))
+async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
+    await query.answer()
+
+    # Get clicked button text/title from the message
+    # To find the exact clicked item, we match the button label or search DB again
+    clicked_button_text = ""
+    for row in query.message.reply_markup.inline_keyboard:
+        for btn in row:
+            if btn.callback_data == query.data:
+                # Remove emoji prefix (❓ ) to get the title
+                clicked_button_text = btn.text.replace("❓ ", "").replace("...", "").strip()
+                break
+
+    all_posts = await db.get_all_posts()
+    matched_link = None
+    matched_full_title = ""
+
+    # Find matching link in DB
+    for post in all_posts:
+        raw_title = post.get("title", "")
+        first_line = raw_title.split("\n")[0].strip()
+        if clicked_button_text.lower() in first_line.lower():
+            matched_link = post.get("link", "")
+            matched_full_title = first_line
+            break
+
+    # DELETE THE PREVIOUS "DID YOU MEAN" MESSAGE
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    # SEND THE FINAL STORY RESULT
+    if matched_link:
+        reply_text = f"<b>✨ ʜᴇʀᴇ ɪs ʏᴏᴜʀ sᴛᴏʀʏ:</b>\n\n<b>📖 {matched_full_title}</b>"
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 ᴄʟɪᴄᴋ ʜᴇʀᴇ ᴛᴏ ᴏᴘᴇɴ", url=matched_link)]
+        ])
+        await query.message.reply_to_message.reply_text(
+            text=reply_text,
+            reply_markup=buttons,
+            disable_web_page_preview=True
+        )
+    else:
+        await query.message.reply_to_message.reply_text("<b>❌ Story link not found or expired.</b>")
