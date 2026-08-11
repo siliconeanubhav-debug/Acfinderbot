@@ -56,7 +56,7 @@ async def add_premium_cmd(bot: Client, message: Message):
         pass
 
 
-@Client.on_message(filters.command("removepremium") & filters.private)
+@Client.on_message(filters.command("remove_premium") & filters.private)
 async def remove_premium_cmd(bot: Client, message: Message):
     if not is_admin(message.from_user.id):
         return
