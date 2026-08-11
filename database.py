@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
@@ -16,26 +17,45 @@ class Database:
             upsert=True
         )
 
-    async def make_premium(self, user_id: int):
-        await self.users.update_one({"user_id": user_id}, {"$set": {"is_premium": True}}, upsert=True)
+    async def add_premium(self, user_id: int, duration_td: timedelta = None):
+        """Adds premium status to user with optional duration (e.g. 1d, 12h, 30m)."""
+        expiry_date = datetime.now() + duration_td if duration_td else None
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"is_premium": True, "premium_expiry": expiry_date}},
+            upsert=True
+        )
 
     async def remove_premium(self, user_id: int):
-        await self.users.update_one({"user_id": user_id}, {"$set": {"is_premium": False}}, upsert=True)
+        """Removes premium status from user."""
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"is_premium": False, "premium_expiry": None}},
+            upsert=True
+        )
 
     async def is_premium_user(self, user_id: int) -> bool:
+        """Checks if user is premium and auto-expires premium if time is over."""
         user = await self.users.find_one({"user_id": user_id})
-        return user.get("is_premium", False) if user else False
+        if not user or not user.get("is_premium", False):
+            return False
+
+        expiry = user.get("premium_expiry")
+        if expiry and datetime.now() > expiry:
+            # Auto-expire premium if time passed
+            await self.remove_premium(user_id)
+            return False
+
+        return True
 
     async def add_post(self, title: str, link: str):
-        # Save only the first line as the searchable title
+        # USER RULE: Save only the first line as the searchable title
         first_line = title.split("\n")[0].strip()
         await self.posts.insert_one({"title": first_line, "link": link})
 
     async def search_posts(self, query: str, limit: int = 5):
         regex_pattern = re.compile(re.escape(query), re.IGNORECASE)
         return await self.posts.find({"title": {"$regex": regex_pattern}}).to_list(length=limit)
-
-    # --- missing functions required for fuzzy search & management ---
 
     async def get_all_posts(self):
         """Fetches all stories/posts for fuzzy search matching."""
