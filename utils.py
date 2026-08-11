@@ -5,6 +5,7 @@ from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
 from config import Config
+from database import db
 
 # India Standard Timezone Constant
 IST = ZoneInfo("Asia/Kolkata")
@@ -78,7 +79,36 @@ def get_time_greeting() -> str:
         return "Good Night 🌙"
 
 
-# --- 2. TEXT & AUTH HELPERS ---
+# --- 2. PREMIUM UTILITY HELPERS ---
+
+async def add_premium_user(user_id: int, time_str: str = None):
+    """
+    Utility wrapper to add premium using time string (e.g., '1d', '12h', '30m').
+    Returns (success: bool, formatted_time_str: str)
+    """
+    duration = parse_time(time_str) if time_str else None
+    await db.make_premium(user_id, duration)
+    
+    if duration:
+        formatted = format_time(int(duration.total_seconds()))
+    else:
+        formatted = "Lifetime ♾️"
+        
+    return True, formatted
+
+
+async def remove_premium_user(user_id: int):
+    """Utility wrapper to remove premium from database."""
+    await db.remove_premium(user_id)
+    return True
+
+
+async def check_user_premium(user_id: int) -> bool:
+    """Utility wrapper to check if user has active premium."""
+    return await db.is_premium_user(user_id)
+
+
+# --- 3. TEXT & AUTH HELPERS ---
 
 def extract_first_line(text: str) -> str:
     """Extracts only the first line of a given text."""
@@ -98,8 +128,7 @@ async def check_force_sub(bot: Client, user_id: int) -> bool:
         return member.status not in ["kicked", "left"]
     except UserNotParticipant:
         return False
-    except Exception as e:
-        # Unexpected error (bot not admin or channel private), allow user to avoid bot crash
+    except Exception:
         return True
 
 
@@ -108,7 +137,7 @@ def is_admin(user_id: int) -> bool:
     return int(user_id) in getattr(Config, "ADMINS", [])
 
 
-# --- 3. UI BUTTON HELPERS ---
+# --- 4. UI BUTTON HELPERS ---
 
 def get_start_buttons():
     """Generates standard start menu inline buttons."""
