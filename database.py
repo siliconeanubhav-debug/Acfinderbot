@@ -1,7 +1,11 @@
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
+
+# India Standard Timezone Fix
+IST = ZoneInfo("Asia/Kolkata")
 
 class Database:
     def __init__(self):
@@ -12,39 +16,48 @@ class Database:
 
     async def add_user(self, user_id: int, name: str):
         await self.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"user_id": user_id, "name": name}},
+            {"user_id": int(user_id)},
+            {"$set": {"user_id": int(user_id), "name": name}},
             upsert=True
         )
 
-    async def add_premium(self, user_id: int, duration_td: timedelta = None):
-        """Adds premium status to user with optional duration (e.g. 1d, 12h, 30m)."""
-        expiry_date = datetime.now() + duration_td if duration_td else None
+    async def make_premium(self, user_id: int, duration_td: timedelta = None):
+        """Adds premium status to user with optional duration in Asia/Kolkata time."""
+        expiry_date = datetime.now(IST) + duration_td if duration_td else None
         await self.users.update_one(
-            {"user_id": user_id},
+            {"user_id": int(user_id)},
             {"$set": {"is_premium": True, "premium_expiry": expiry_date}},
             upsert=True
         )
 
+    # Alias method so both make_premium and add_premium work without crashing
+    async def add_premium(self, user_id: int, duration_td: timedelta = None):
+        await self.make_premium(user_id, duration_td)
+
     async def remove_premium(self, user_id: int):
         """Removes premium status from user."""
         await self.users.update_one(
-            {"user_id": user_id},
+            {"user_id": int(user_id)},
             {"$set": {"is_premium": False, "premium_expiry": None}},
             upsert=True
         )
 
     async def is_premium_user(self, user_id: int) -> bool:
-        """Checks if user is premium and auto-expires premium if time is over."""
-        user = await self.users.find_one({"user_id": user_id})
+        """Checks if user is premium with IST Timezone awareness and auto-expiration."""
+        user = await self.users.find_one({"user_id": int(user_id)})
         if not user or not user.get("is_premium", False):
             return False
 
         expiry = user.get("premium_expiry")
-        if expiry and datetime.now() > expiry:
-            # Auto-expire premium if time passed
-            await self.remove_premium(user_id)
-            return False
+        if expiry:
+            # Handle naive datetime conversion from MongoDB
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=IST)
+            
+            # Check against current IST time
+            if datetime.now(IST) > expiry:
+                await self.remove_premium(user_id)
+                return False
 
         return True
 
