@@ -2,8 +2,12 @@ import re
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from fuzzywuzzy import fuzz
 from database import db
+
+try:
+    from rapidfuzz import fuzz
+except ImportError:
+    from fuzzywuzzy import fuzz
 
 # Configuration
 EXACT_MATCH_THRESHOLD = 60   # 60% ya usse zyada accurate match hone par direct story
@@ -18,7 +22,7 @@ def clean_text(text: str) -> str:
     return text.strip().lower()
 
 
-@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "about", "add", "delete", "premium", "make_premium", "remove_premium"]))
+@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "about", "add", "delete", "premium", "make_premium", "remove_premium", "addstory", "delstory", "rmstory", "addpremium", "removepremium"]))
 async def strict_fuzzy_search_handler(bot: Client, message: Message):
     text = message.text.strip()
 
@@ -43,19 +47,21 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
         if not raw_title or not link:
             continue
 
-        # RULE: Fetch FIRST LINE only
+        # RULE: Save/Fetch FIRST LINE only as title
         first_line_title = raw_title.split("\n")[0].strip()
         clean_title = clean_text(first_line_title)
 
-        # Skip irrelevant or single word test entries if user didn't explicitly search for them
+        if not clean_title:
+            continue
+
+        # Skip irrelevant test entries if user didn't explicitly search for them
         if "test" in clean_title and "test" not in clean_query:
             continue
 
         # 2. STRICT WORD ACCURACY CHECK
-        # token_set_ratio compares word sets instead of random substring matches
         fuzzy_score = fuzz.token_set_ratio(clean_query, clean_title)
 
-        # Bonus score if search words are strictly present inside the title
+        # Bonus score check if search words are present inside the title
         word_overlap = sum(1 for word in query_words if word in clean_title)
         if word_overlap == 0 and fuzzy_score < 65:
             # Drop matches that don't share actual words
@@ -119,7 +125,7 @@ async def strict_fuzzy_search_handler(bot: Client, message: Message):
         asyncio.create_task(auto_delete_message(sent_msg, AUTO_DELETE_TIME))
         return
 
-    # --- C. STRICT SILENT MODE ---
+    # --- C. STRICT SILENT MODE (Out of DB -> No output) ---
     else:
         return
 
@@ -153,7 +159,7 @@ async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
 
     chat_id = query.message.chat.id
 
-    # 1. Delete previous "Did You Mean" message
+    # Delete previous "Did You Mean" message safely
     try:
         await query.message.delete()
     except Exception:
@@ -161,7 +167,7 @@ async def suggestion_callback_handler(bot: Client, query: CallbackQuery):
 
     delete_notice = "\n\n<i>⏳ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇᴅ ɪɴ 𝟻 ᴍɪɴᴜᴛᴇs.</i>"
 
-    # 2. Send final story link message
+    # Send final story link message
     if matched_link:
         reply_text = (
             f"<b>✨ ʜᴇʀᴇ ɪs ʏᴏᴜʀ sᴛᴏʀʏ:</b>\n\n"
