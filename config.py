@@ -8,15 +8,16 @@ class Config:
     MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://...")
     DB_NAME = os.environ.get("DB_NAME", "ACSearchBotDB")
     
-    # Admins (Comma-separated IDs)
-    ADMINS = [int(id) for id in os.environ.get("ADMINS", "123456789").split()]
+    # Admins Parsing with Safety Fallback
+    raw_admins = os.environ.get("ADMINS", "123456789")
+    ADMINS = [int(x.strip()) for x in raw_admins.split(",") if x.strip().isdigit()]
     
-    # Force Subscribe Channel Username (without @)
-    FSUB_CHANNEL = os.environ.get("FSUB_CHANNEL", "YourChannelUsername")
-    FSUB_LINK = f"https://t.me/{FSUB_CHANNEL}"
+    # Force Subscribe Channel Username (@ रिमूव सेफ्टी के साथ)
+    raw_fsub = os.environ.get("FSUB_CHANNEL", "YourChannelUsername").replace("@", "").strip()
+    FSUB_CHANNEL = raw_fsub if raw_fsub else None
+    FSUB_LINK = f"https://t.me/{FSUB_CHANNEL}" if FSUB_CHANNEL else "https://t.me/YourChannelUsername"
     
-    # Links
+    # Dynamic Links & Developer Contact
     UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "https://t.me/YourChannelUsername")
     SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP", "https://t.me/YourSupportGroup")
     DEV_LINK = os.environ.get("DEV_LINK", "https://t.me/Kaluu")
-  
